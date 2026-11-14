@@ -1,1 +1,0 @@
-/data/data/com.termux/files/home/projects/viitorvoice-demo/app/src/main/cpp/CMakeLists.txt
