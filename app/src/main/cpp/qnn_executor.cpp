@@ -430,10 +430,10 @@ int qnn_init(const char *lib_dir, const char *skel_dir) {
     return -1;
   }
 
-  /* Vote the DSP up to the max voltage corner with sleep disabled. Without an
-   * explicit power config the skel stays at a low corner and low bus bandwidth,
-   * which is why the big graphs (rmvpe ~190 MB of weights) run 3-5x slower than
-   * the same .bin in a process that votes. ML-Sharp-QNN does the same thing. */
+  /* Let HTP DCVS manage its own corners. An earlier version pinned bus+core to
+   * MAX and disabled sleep; that kept the SoC hot and the CPU cluster at full
+   * clock for the whole process lifetime. The few hundred ms it saved is not
+   * worth the thermals here. */
   QnnDevice_Infrastructure_t infra = NULL;
   if (IF.deviceGetInfrastructure && QNN_SUCCESS == IF.deviceGetInfrastructure(&infra) && infra) {
     QnnHtpDevice_Infrastructure_t *htpInfra = (QnnHtpDevice_Infrastructure_t *)infra;
@@ -449,26 +449,10 @@ int qnn_init(const char *lib_dir, const char *skel_dir) {
         pc.dcvsV3Config.contextId = cfgId;
         pc.dcvsV3Config.setDcvsEnable = 1;
         pc.dcvsV3Config.dcvsEnable = 1;
-        /* locked max: min=target=max pins the frequency, sleep off keeps it
-         * there between graphExecute calls (this is a short burst of work) */
-        pc.dcvsV3Config.setSleepDisable = 1;
-        pc.dcvsV3Config.sleepDisable = 1;
         pc.dcvsV3Config.powerMode =
             QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_ADJUST_UP_DOWN;
-        pc.dcvsV3Config.setBusParams = 1;
-        pc.dcvsV3Config.busVoltageCornerMin =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        pc.dcvsV3Config.busVoltageCornerTarget =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        pc.dcvsV3Config.busVoltageCornerMax =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        pc.dcvsV3Config.setCoreParams = 1;
-        pc.dcvsV3Config.coreVoltageCornerMin =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        pc.dcvsV3Config.coreVoltageCornerTarget =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        pc.dcvsV3Config.coreVoltageCornerMax =
-            DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+        /* No setBusParams / setCoreParams / sleepDisable on purpose: leave the
+         * voltage corners to DCVS so the SoC can settle down between graphs. */
         const QnnHtpPerfInfrastructure_PowerConfig_t *pcs[] = {&pc, NULL};
         Qnn_ErrorHandle_t pe = perf.setPowerConfig(cfgId, pcs);
         if (pe != QNN_SUCCESS) {
@@ -476,7 +460,7 @@ int qnn_init(const char *lib_dir, const char *skel_dir) {
                (unsigned long long)pe);
           perf.destroyPowerConfigId(cfgId);
         } else {
-          qlog("perf infra: locked MAX corner, sleep disabled (cfgId=%u)", cfgId);
+          qlog("perf infra: DCVS dynamic (cfgId=%u)", cfgId);
         }
       } else {
         qlog("perf infra: createPowerConfigId unsupported");

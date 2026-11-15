@@ -40,6 +40,10 @@ add_library(${VV_LIB_NAME} SHARED
 
 find_library(log-lib log)
 
+# The log-mel frontend is the only hot pure-CPU code in the pipeline; let the
+# compiler vectorize it (no -ffast-math: the mel values feed a calibrated graph).
+set_source_files_properties(vv_mel.cpp PROPERTIES COMPILE_OPTIONS "-O3")
+
 add_library(onnxruntime SHARED IMPORTED)
 set_target_properties(onnxruntime PROPERTIES
     IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libonnxruntime.so)

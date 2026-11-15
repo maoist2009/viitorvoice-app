@@ -18,8 +18,7 @@ constexpr float SCALE_IN = 32768.0f;
 
 float g_win[WIN];
 float g_fb[BINS * MEL];
-float g_cos[N_FFT / 2];
-float g_sin[N_FFT / 2];
+float g_tw[9][256][2];   /* per-stage twiddles, contiguous per stage */
 int g_rev[N_FFT];
 
 /* contiguous nonzero span of each mel channel: cost drops from 257 to ~6 */
@@ -29,6 +28,9 @@ struct Span {
   const float *w;
 };
 Span g_span[MEL];
+/* filterbank transposed to [mel][bin] so the dot product above is contiguous
+ * and vectorizes; the blob itself is [bin][mel] */
+float g_fbT[MEL * BINS];
 bool g_ready = false;
 
 void dsp_init(void) {
@@ -38,15 +40,21 @@ void dsp_init(void) {
       if ((i >> b) & 1) r |= 1 << (8 - b);
     g_rev[i] = r;
   }
-  for (int i = 0; i < N_FFT / 2; i++) {
-    const double t = -2.0 * M_PI * (double)i / (double)N_FFT;
-    g_cos[i] = (float)std::cos(t);
-    g_sin[i] = (float)std::sin(t);
+  /* Per-stage twiddle tables. A single 256-entry table read with stride
+   * N_FFT/len would touch a different cache line per butterfly on the early
+   * stages; copying the twiddles stage by stage keeps each pass sequential. */
+  for (int s = 0; s < 9; s++) {
+    const int len = 2 << s, half = 1 << s, step = N_FFT / len;
+    for (int k = 0; k < half; k++) {
+      const double t = -2.0 * M_PI * (double)(k * step) / (double)N_FFT;
+      g_tw[s][k][0] = (float)std::cos(t);
+      g_tw[s][k][1] = (float)std::sin(t);
+    }
   }
 }
 
 /* in-place radix-2 complex FFT, 512 points */
-void fft512(float *re, float *im) {
+void fft512(float *__restrict re, float *__restrict im) {
   for (int i = 0; i < N_FFT; i++) {
     const int j = g_rev[i];
     if (j > i) {
@@ -54,13 +62,13 @@ void fft512(float *re, float *im) {
       t = im[i]; im[i] = im[j]; im[j] = t;
     }
   }
-  for (int len = 2; len <= N_FFT; len <<= 1) {
-    const int half = len >> 1;
-    const int step = N_FFT / len;
+  for (int s = 0; s < 9; s++) {
+    const int len = 2 << s, half = 1 << s;
+    const float (*tw)[2] = g_tw[s];
     for (int i = 0; i < N_FFT; i += len) {
       for (int k = 0; k < half; k++) {
-        const float wr = g_cos[k * step];
-        const float wi = g_sin[k * step];
+        const float wr = tw[k][0];
+        const float wi = tw[k][1];
         const int a = i + k, b = a + half;
         const float xr = re[b] * wr - im[b] * wi;
         const float xi = re[b] * wi + im[b] * wr;
@@ -82,16 +90,18 @@ int vv_mel_init(const char *blob_path) {
   const size_t got_f = fread(g_fb, sizeof(float), (size_t)BINS * MEL, f);
   fclose(f);
   if (got_w != WIN || got_f != (size_t)BINS * MEL) return -2;
+  for (int k = 0; k < BINS; k++)
+    for (int m = 0; m < MEL; m++) g_fbT[m * BINS + k] = g_fb[k * MEL + m];
   for (int m = 0; m < MEL; m++) {
     int s = -1, e = -1;
     for (int k = 0; k < BINS; k++)
-      if (g_fb[k * MEL + m] != 0.0f) {
+      if (g_fbT[m * BINS + k] != 0.0f) {
         if (s < 0) s = k;
         e = k;
       }
     g_span[m].start = s < 0 ? 0 : s;
     g_span[m].len = s < 0 ? 0 : e - s + 1;
-    g_span[m].w = g_fb + (s < 0 ? 0 : s) * MEL + m;
+    g_span[m].w = g_fbT + m * BINS + (s < 0 ? 0 : s);
   }
   dsp_init();
   g_ready = true;
@@ -135,8 +145,9 @@ void vv_mel_logmel(const float *a16, float *out) {
     for (int m = 0; m < MEL; m++) {
       const Span &s = g_span[m];
       const float *w = s.w;
+      const float *p = pw + s.start;
       float acc = 0.0f;
-      for (int k = 0; k < s.len; k++) acc += pw[s.start + k] * w[k * MEL];
+      for (int k = 0; k < s.len; k++) acc += p[k] * w[k];
       o[m] = std::log(acc < CLAMP_MIN ? CLAMP_MIN : acc);
     }
   }
