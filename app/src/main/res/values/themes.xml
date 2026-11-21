@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.ViiTorVoice" parent="android:Theme.Material.NoActionBar">
-        <item name="android:statusBarColor">#101418</item>
-        <item name="android:navigationBarColor">#101418</item>
-        <item name="android:windowBackground">#101418</item>
+    <!-- The window background is only visible before Compose draws (cold start
+         / rotation); keep it equal to the light scheme's background so there is
+         no dark flash when the system is in light mode. -->
+    <style name="Theme.ViiTorVoice" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F6F9FA</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
     </style>
 </resources>
