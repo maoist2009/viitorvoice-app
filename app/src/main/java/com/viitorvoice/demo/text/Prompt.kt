@@ -173,7 +173,6 @@ object Prompt {
      * only leaves a trailing silence (which [Render.trimEdges] cuts). Keep this
      * above 1.0 unless the calibration sweep says otherwise.
      */
-    const val HEADROOM = 1.0f
 
     class ClonePlan(val cond: IntArray, val refFrames: Int, val frames: Int)
 

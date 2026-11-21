@@ -224,6 +224,7 @@ fun HomeScreen(vm: HomeViewModel = viewModel()) {
                             onChange = vm::setRefText,
                         )
                     }
+                    item { SaveVoiceRow(state, vm) }
                     item { CloneTextCard(state, vm) }
                     item { Params(state, vm) }
                     item { ResultCard(state, vm) }
@@ -581,8 +582,8 @@ private fun CloneTextCard(state: UiState, vm: HomeViewModel) {
         )
 
         if (state.refFrames > 0 && state.text.isNotEmpty()) {
-            val est = if (state.refText.isBlank()) Duration.frames(Tags.stripEmotion(state.text))
-            else Duration.frames(Tags.stripEmotion(state.text), state.refText, state.refFrames)
+            val est = if (state.targetSec > 0f) (state.targetSec * Duration.FRAME_RATE).toInt()
+            else Duration.frames(state.text, state.lang)
             val winSec = Engine.maxWindow() / 25f
             val total = (state.refFrames + est) / 25f
             val over = total > winSec
@@ -593,6 +594,34 @@ private fun CloneTextCard(state: UiState, vm: HomeViewModel) {
                 style = MaterialTheme.typography.labelSmall,
                 color = if (over) MaterialTheme.colorScheme.error
                 else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("目标时长", style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.width(8.dp))
+            var durText by remember {
+                mutableStateOf(if (state.targetSec > 0f) "%.2f".format(state.targetSec) else "")
+            }
+            OutlinedTextField(
+                value = durText,
+                onValueChange = { v ->
+                    durText = v.filter { it.isDigit() || it == '.' }.take(5)
+                    vm.setTargetSec(durText.toFloatOrNull() ?: 0f)
+                },
+                modifier = Modifier.width(110.dp),
+                placeholder = { Text("自动") },
+                singleLine = true,
+                enabled = !state.busy && !state.recording,
+                shape = RoundedCornerShape(12.dp),
+                textStyle = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "秒，留空=官方 4.8 字/秒估算",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 

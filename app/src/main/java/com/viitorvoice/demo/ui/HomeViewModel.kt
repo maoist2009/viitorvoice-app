@@ -11,6 +11,8 @@ import com.viitorvoice.demo.audio.Player
 import com.viitorvoice.demo.audio.Recorder
 import com.viitorvoice.demo.audio.Render
 import com.viitorvoice.demo.audio.WavFile
+import com.viitorvoice.demo.data.Store
+import com.viitorvoice.demo.data.Voice
 import com.viitorvoice.demo.text.Duration
 import com.viitorvoice.demo.text.Prompt
 import com.viitorvoice.demo.text.Split
@@ -52,6 +54,9 @@ data class UiState(
     val emotionScale: Float = 1.0f,
     val nvvScale: Float = 0.5f,
 
+    /** Target duration in seconds (0 = auto, the official demo's "auto"). */
+    val targetSec: Float = 0f,
+
     // source clip (edit mode)
     val samples: FloatArray = FloatArray(0),
     val frames: Int = 0,                 // frames the audio provides (<= 200)
@@ -66,6 +71,9 @@ data class UiState(
     val refFrames: Int = 0,
     val refPath: String? = null,
     val refSec: Float = 0f,
+
+    /** Set when the reference came from the voice library (P0). */
+    val activeVoiceId: Long? = null,
 
     val busy: Boolean = false,
     val stage: String = "",
@@ -104,6 +112,71 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     fun setEmotionScale(v: Float) = _state.update { it.copy(emotionScale = v) }
     fun setNvvScale(v: Float) = _state.update { it.copy(nvvScale = v) }
     fun setRefText(v: String) = _state.update { it.copy(refText = v) }
+
+    /** Empty / 0 means auto (the demo's `target_duration = None`). */
+    fun setTargetSec(v: Float) = _state.update { it.copy(targetSec = v.coerceIn(0f, 30f)) }
+
+    // --------------------------------------------------------- voice library
+    /** Copy the current reference clip into the voice library. */
+    fun saveVoice(name: String) {
+        val s = _state.value
+        val src = s.refPath?.let(::File) ?: return
+        if (!src.isFile) {
+            _state.update { it.copy(error = "参考音频不存在") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val st = Store.get(getApplication())
+                val dst = st.newVoiceFile()
+                src.copyTo(dst, overwrite = true)
+                val id = st.addVoice(
+                    name.trim().ifBlank { "音色" }, dst.absolutePath, s.refText, s.lang, "",
+                )
+                _state.update { it.copy(activeVoiceId = id) }
+                addLog("音色已保存 · ${dst.name}")
+            }.onFailure { addLog("保存音色失败: ${it.message}") }
+        }
+    }
+
+    /** Load a saved voice back into the reference slot. */
+    fun loadVoice(v: Voice) {
+        if (_state.value.busy) return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, stage = "载入音色", progress = 0.05f, error = null) }
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    val wav = WavFile.read(File(v.wavPath))
+                    val pcm = resample(wav.samples, wav.sampleRate, AudioIo.SR)
+                    val cut = pcm.copyOf(min(pcm.size, 200 * 960))
+                    val f = File(getApplication<Application>().filesDir, "ref.wav")
+                    AudioIo.writeWav(f, cut)
+                    cut to f
+                }.getOrElse { it }
+            }
+            if (res is Pair<*, *>) {
+                @Suppress("UNCHECKED_CAST")
+                val pair = res as Pair<FloatArray, File>
+                loadSamples(pair.first, AudioIo.SR, pair.second, Slot.REF)
+                _state.update {
+                    it.copy(
+                        refText = v.refText,
+                        lang = v.lang.ifBlank { it.lang },
+                        activeVoiceId = v.id,
+                        tab = TAB_CLONE,
+                    )
+                }
+                addLog("载入音色 ${v.name}")
+            } else {
+                _state.update {
+                    it.copy(
+                        busy = false, stage = "",
+                        error = "载入失败: ${(res as Throwable).message}",
+                    )
+                }
+            }
+        }
+    }
 
     fun onTextChange(value: String) {
         _state.update { it.copy(text = value) }
@@ -251,7 +324,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(
                     busy = false, stage = "", progress = 0f,
                     refSamples = cut, refFrames = frames, refPath = file.absolutePath,
-                    refSec = cut.size / 24000f, resultPath = null,
+                    refSec = cut.size / 24000f, resultPath = null, activeVoiceId = null,
                 )
             }
             addLog("参考音频 ${"%.2f".format(cut.size / 24000f)} s · $frames 帧")
@@ -446,7 +519,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         val refFrames = rt.size / 12
         val tok = Engine.tokenizer(getApplication())
         val window = Engine.maxWindow()
-        val estAll = if (forceFrames > 0) forceFrames else estimateFrames(s, refFrames, s.text)
+        val estAll = if (forceFrames > 0) forceFrames else estimateFrames(s, s.text)
 
         // One job as long as the whole text fits the 200-frame decoder window.
         if (estAll <= Prompt.DEFAULT_FRAMES) {
@@ -485,7 +558,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         if (min(window, Prompt.SEQ_SHORT) - refKeep - 1 - 20 < 20) {
             return "ERR 窗口 $window 太小（参考 %d 帧），请改短参考音".format(refFrames)
         }
-        val todo = ArrayList(Split.chunks(s.text, cap) { estimateFrames(s, refFrames, it) })
+        val todo = ArrayList(Split.chunks(s.text, cap) { estimateFrames(s, it) })
         if (todo.isEmpty()) return "ERR 请输入要合成的文本"
         addLog("文本约 %.1f s，分 %d 段生成".format(estAll / 25.0, todo.size))
 
@@ -496,11 +569,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             val refN = min(refKeep, refFrames)
             val cond = Prompt.buildClone(tok, piece, s.refText, refN, s.lang)
             val room = window - cond.size - refN - 1
-            val want = estimateFrames(s, refFrames, piece)
+            val want = estimateFrames(s, piece)
             if (want > room || room < 10) {
                 // The prompt grew past the reserve: split this piece once more.
                 val cap2 = min(room, Prompt.DEFAULT_FRAMES)
-                val sub = if (cap2 >= 20) Split.chunks(piece, cap2) { estimateFrames(s, refFrames, it) }
+                val sub = if (cap2 >= 20) Split.chunks(piece, cap2) { estimateFrames(s, it) }
                 else emptyList()
                 if (sub.size <= 1) {
                     return "ERR 第 ${i + 1} 段放不进 %d 窗口（提示 %d + 参考 %d）"
@@ -534,12 +607,18 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         return assemble(parts, File(getApplication<Application>().filesDir, "clone.wav"), s.text, t0)
     }
 
-    /** Frames for [text] at the reference speaking rate, plus [Prompt.HEADROOM]. */
-    private fun estimateFrames(s: UiState, refFrames: Int, text: String): Int {
-        val body = Tags.stripEmotion(text)
-        val est = if (s.refText.isBlank()) Duration.frames(body)
-        else Duration.frames(body, s.refText, refFrames)
-        return (est * Prompt.HEADROOM).toInt().coerceAtLeast(1)
+    /**
+     * Frames for [text] using the official demo's rate model (see [Duration]).
+     *
+     * An explicit target duration scales every piece by the same factor, the
+     * way the demo's `duration` argument replaces the backend's own estimate;
+     * per-chunk pieces keep their relative share of the whole text.
+     */
+    private fun estimateFrames(s: UiState, text: String): Int {
+        val est = Duration.frames(text, s.lang)
+        if (s.targetSec <= 0f) return est
+        val whole = Duration.frames(s.text, s.lang).coerceAtLeast(1)
+        return (est * (s.targetSec * Duration.FRAME_RATE / whole)).toInt().coerceAtLeast(1)
     }
 
     /**

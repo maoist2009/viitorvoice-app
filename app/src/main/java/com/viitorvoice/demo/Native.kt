@@ -20,6 +20,19 @@ object Native {
     /** Loads llm.bin, head.bin and the embedding tables. "OK <ms>" or an error. */
     external fun nativeNarInit(modelsDir: String): String
 
+    // ---- shared model library (MLP/1) -----------------------------------
+    /**
+     * Bind read-only fds from the model host to path suffixes (e.g. "/llm.bin").
+     * Ownership of every fd moves to native; pass fds detached from their
+     * ParcelFileDescriptor. Returns how many bindings were accepted.
+     */
+    external fun nativeBindModelFds(suffixes: Array<String>, fds: IntArray): Int
+
+    /** Drop all fd bindings (contexts already loaded stay valid). */
+    external fun nativeClearModelFds()
+
+    external fun nativeBoundModelFds(): Int
+
     /** Prompt window in tokens (256 = 10.2 s, 512 = 20.5 s). 0 on failure. */
     external fun nativeNarSetWindow(seq: Int): Int
     external fun nativeNarWindow(): Int

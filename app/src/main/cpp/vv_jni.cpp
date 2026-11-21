@@ -6,9 +6,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <unistd.h>
 
 #include <string>
 
+#include "mstore.h"
 #include "qnn_executor.h"
 #include "vv_encode.h"
 #include "vv_nar.h"
@@ -144,6 +146,46 @@ Java_com_viitorvoice_demo_Native_nativeDecodeToWav(JNIEnv *env, jclass,
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_viitorvoice_demo_Native_nativeTimings(JNIEnv *env, jclass) {
   return env->NewStringUTF(qnn_timings_json());
+}
+
+/* ------------------------------------------------- shared model library --
+ * MLP/1 delivers model blobs as read-only fds from a ContentProvider, so the
+ * host's private paths never reach this process. Each fd is bound to a path
+ * suffix; every later open of "<anything>/<name>" resolves to it. The engine
+ * code above keeps calling qnn_load(dir + "/llm.bin") and friends unchanged.
+ */
+extern "C" JNIEXPORT jint JNICALL
+Java_com_viitorvoice_demo_Native_nativeBindModelFds(JNIEnv *env, jclass,
+                                                    jobjectArray suffixes,
+                                                    jintArray fds) {
+  const jsize n = suffixes ? env->GetArrayLength(suffixes) : 0;
+  const jsize m = fds ? env->GetArrayLength(fds) : 0;
+  if (n <= 0 || n != m) return -1;
+  jint *raw = env->GetIntArrayElements(fds, nullptr);
+  int bound = 0;
+  for (jsize i = 0; i < n; i++) {
+    auto js = (jstring)env->GetObjectArrayElement(suffixes, i);
+    const std::string suffix = jstr(env, js);
+    if (js) env->DeleteLocalRef(js);
+    if (mstore_bind(suffix.c_str(), raw[i]) == 0) {
+      bound++;  /* ownership moved to the table */
+    } else {
+      close(raw[i]);
+    }
+  }
+  env->ReleaseIntArrayElements(fds, raw, JNI_ABORT);
+  __android_log_print(ANDROID_LOG_INFO, TAG, "bound %d/%d model fds", bound, (int)n);
+  return bound;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_viitorvoice_demo_Native_nativeClearModelFds(JNIEnv *, jclass) {
+  mstore_clear();
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_viitorvoice_demo_Native_nativeBoundModelFds(JNIEnv *, jclass) {
+  return mstore_bound();
 }
 
 /* ------------------------------------------------------------ NAR pipeline */

@@ -24,6 +24,16 @@ class VvTokenizer(jsonText: String) {
     private val added = HashMap<String, Int>(4096)     // special tokens -> id
     private val cache = HashMap<String, IntArray>(4096)
 
+    /**
+     * Added tokens that occur as literal text, indexed by first char and sorted
+     * longest-first (HF's AddedVocabulary matches greedily, anywhere in the
+     * text). This is what carries the 18 NVV tags: `<|nv-Cough|>` is rewritten
+     * to `(coughs)` by [Tags.normalizeNvv], and `(coughs)` is *one* token
+     * (id 52678). Splitting it as BPE would feed the model the English word
+     * "coughs" — it then reads the word out loud instead of coughing.
+     */
+    private val literal = HashMap<Char, List<Pair<String, Int>>>(64)
+
     init {
         val root = JSONObject(jsonText)
         val model = root.getJSONObject("model")
@@ -52,7 +62,21 @@ class VvTokenizer(jsonText: String) {
                 if (!vocab.containsKey(c)) vocab[c] = o.getInt("id")
             }
         }
-        Log.i(TAG, "loaded ${vocab.size} pieces, ${ranks.size} merges, ${added.size} specials")
+        val byFirst = HashMap<Char, MutableList<Pair<String, Int>>>(64)
+        for ((c, id) in added) {
+            if (c.isEmpty() || c.startsWith("<|")) continue   // <|...|> goes through specialEnd()
+            byFirst.getOrPut(c[0]) { ArrayList() }.add(c to id)
+        }
+        for ((k, v) in byFirst) literal[k] = v.sortedByDescending { it.first.length }
+        Log.i(TAG, "loaded ${vocab.size} pieces, ${ranks.size} merges, " +
+            "${added.size} specials, ${literal.values.sumOf { it.size }} literal")
+    }
+
+    /** Longest literal added token at [at], or null. */
+    private fun literalAt(text: String, at: Int): Pair<String, Int>? {
+        val cands = literal[text[at]] ?: return null
+        for (c in cands) if (text.startsWith(c.first, at)) return c
+        return null
     }
 
     /** Full text -> token ids, special tokens passed through unchanged. */
@@ -61,6 +85,12 @@ class VvTokenizer(jsonText: String) {
         var i = 0
         val n = text.length
         while (i < n) {
+            val lit = literalAt(text, i)
+            if (lit != null) {
+                out.add(lit.second)
+                i += lit.first.length
+                continue
+            }
             val end = specialEnd(text, i)
             if (end > i) {
                 val tag = text.substring(i, end)
@@ -72,7 +102,7 @@ class VvTokenizer(jsonText: String) {
                 }
             }
             var j = i
-            while (j < n && specialEnd(text, j) <= j) j++
+            while (j < n && specialEnd(text, j) <= j && literalAt(text, j) == null) j++
             out.addAll(tokenizePlain(text.substring(i, j)).toList())
             i = j
         }

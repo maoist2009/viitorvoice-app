@@ -35,6 +35,17 @@ object Engine {
 
     val modelsDir: File get() = File(app.filesDir, "models")
 
+    /** Every blob the pipelines open by name — the shared library can serve them all. */
+    private val allModelNames: List<String>
+        get() = (decoderFiles + narFiles + encoderFiles + "nar_steps").distinct()
+
+    private var storeTried = false
+    private var storeBound = false
+
+    /** Human-readable outcome of the shared-library attempt ("" while untried). */
+    var storeMsg: String = ""
+        private set
+
     private val decoderFiles = listOf(
         "dec_p1.bin", "dec_p2.bin", "dec_p3.bin", "dec_p4.bin", "dec_p5.bin",
     )
@@ -60,7 +71,41 @@ object Engine {
     }
 
     fun missingNarFiles(): List<String> =
-        (decoderFiles + narFiles).filter { !File(modelsDir, it).isFile }
+        if (storeBound) emptyList()
+        else (decoderFiles + narFiles).filter { !File(modelsDir, it).isFile }
+
+    /**
+     * Point every model path at the shared library (MLP/1) when it has the set.
+     * Runs once per process; on failure the app keeps using filesDir/models.
+     */
+    fun ensureStore(): Boolean {
+        if (storeTried) return storeBound
+        storeTried = true
+        if (!ModelStore.available(app)) {
+            storeMsg = "未安装共享模型库"
+            return false
+        }
+        if (!ModelStore.has(app, ModelStore.NAR_SET, allModelNames)) {
+            storeMsg = "共享库缺模型"
+            return false
+        }
+        val err = ModelStore.bind(app, ModelStore.NAR_SET, ModelStore.NAR_ARCH, allModelNames)
+        storeBound = err.isEmpty()
+        storeMsg = if (storeBound) "共享库 · ${ModelStore.summary(app)}" else err
+        return storeBound
+    }
+
+    /** True once model paths resolve through the shared library. */
+    val usingStore: Boolean get() = storeBound
+
+    /**
+     * Producer role: publish this app's private copies into the library so they
+     * can be deleted afterwards. Content-addressed, so re-running is free.
+     */
+    fun publishLocalModels(): String {
+        val files = installedModels().filter { it.name in allModelNames }
+        return ModelStore.publish(app, ModelStore.NAR_SET, ModelStore.NAR_ARCH, files)
+    }
 
     /** Largest prompt window the installed llm/head .bin carries (256 or 512). */
     fun maxWindow(): Int =
@@ -81,7 +126,7 @@ object Engine {
         val err = ensureInit()
         if (err.isNotEmpty()) return err
         if (narInited) return ""
-        val missing = narFiles.filter { !File(modelsDir, it).isFile }
+        val missing = if (storeBound) emptyList() else narFiles.filter { !File(modelsDir, it).isFile }
         if (missing.isNotEmpty()) return "缺少模型: ${missing.joinToString()}"
         val r = Native.nativeNarInit(modelsDir.absolutePath)
         narInitMsg = r
@@ -143,7 +188,8 @@ object Engine {
     )
 
     fun missingEncoderFiles(): List<String> =
-        encoderFiles.filter { !File(modelsDir, it).isFile }
+        if (storeBound) emptyList()
+        else encoderFiles.filter { !File(modelsDir, it).isFile }
 
     /** Timing lines go to files/run_log.txt; logcat is unreadable here. */
     private fun logT(s: String) {
@@ -327,9 +373,11 @@ object Engine {
     }
 
     fun missingDecoderFiles(): List<String> =
-        decoderFiles.filter { !File(modelsDir, it).isFile }
+        if (storeBound) emptyList()
+        else decoderFiles.filter { !File(modelsDir, it).isFile }
 
     fun statusLine(): String {
+        if (storeBound) return "共享模型库 · ${ModelStore.summary(app)}"
         val missing = missingNarFiles()
         if (missing.isNotEmpty()) return "缺少 ${missing.size} 个 NAR 模型"
         val enc = missingEncoderFiles()
@@ -341,6 +389,7 @@ object Engine {
     /** Loads the QNN backend and the five decoder contexts. Returns "" on success. */
     fun ensureInit(): String {
         if (inited) return ""
+        ensureStore()
         val missing = missingDecoderFiles()
         if (missing.isNotEmpty()) return "缺少模型: ${missing.joinToString()}"
         val ctx = app

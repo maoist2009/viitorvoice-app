@@ -1,112 +1,71 @@
 package com.viitorvoice.demo.text
 
-import java.util.Locale
-
 /**
- * Port of viitorvoice/llm/text_utils.py `RuleDurationEstimator`.
+ * Target-length estimate, ported from the **official demo** (`demo_gradio.py`'s
+ * `_estimated_duration`), not from the backend's `RuleDurationEstimator`.
  *
- * The reference estimates how many 25 Hz audio frames the sentence should take
- * by scoring each character (CJK ~3, latin ~1, digits ~3.5, punctuation 0.5)
- * against a reference sentence of known duration, then micro-boosting the
- * result (`low_threshold` 50, `boost_strength` 3):
+ * Why the demo's version: the official product path always passes an explicit
+ * `duration` to `/v1/voice-clone`, which makes the backend skip its own
+ * estimator (`generation.py`: `if has_duration: target = duration * 25`). The
+ * backend fallback (char weights, `low_threshold=50` cubic boost) is what we
+ * used to port, and it stretches every sentence shorter than 2 s.
  *
- *   est = w(target) / (w(ref) / ref_duration)
- *   est = 50 * (est / 50) ** (1 / 3)      if est < 50
+ * The demo's rules, verbatim:
+ *   - emotion tags are deleted, `<|nv-...|>` becomes `字字` (CJK) or ` word `
+ *   - CJK: seconds = chars / 4.8
+ *   - other: seconds = max(words / 2.6, chars / 16)
+ *   - clamp to [1, 30] s, rounded to 2 decimals
  *
- * `refText` "Nice to meet you." at 25 frames is the value the shipping config
- * uses (`no_ref_text_silence_prefix_seconds` = 0, so the text branch wins).
+ * We also accept the literal parenthetical form (`(coughs)`) because the app
+ * lets people type the token directly; it means the same thing as the tag.
  */
 object Duration {
 
-    private const val REF_TEXT = "Nice to meet you."
-    private const val REF_FRAMES = 25.0
-    private const val LOW_THRESHOLD = 50.0
-    private const val BOOST_STRENGTH = 3.0
+    private const val CJK_CHARS_PER_SEC = 4.8f
+    private const val EN_WORDS_PER_SEC = 2.6f
+    private const val EN_CHARS_PER_SEC = 16.0f
+    private const val MIN_SEC = 1.0f
+    private const val MAX_SEC = 30.0f
 
-    private const val CJK = 3.0
-    private const val HANGUL = 2.5
-    private const val KANA = 2.2
-    private const val INDIC = 1.8
-    private const val THAI_LAO = 1.5
-    private const val KHMER_MYANMAR = 1.8
-    private const val ARABIC = 1.5
-    private const val HEBREW = 1.5
-    private const val LATIN = 1.0
-    private const val SPACE = 0.2
-    private const val DIGIT = 3.5
-    private const val PUNCT = 0.5
-    private const val MARK = 0.0
-    private const val DEFAULT = 1.0
+    /** Audio frame rate of the NAR (frames per second). */
+    const val FRAME_RATE = 25
 
-    /** (upper bound, weight) pairs, checked with the first bound >= code. */
-    private val RANGES = intArrayOf(
-        0x02AF, 0x03FF, 0x052F, 0x05FF, 0x08FF, 0x0DFF, 0x0EFF, 0x109F,
-        0x11FF, 0x309F, 0x30FF, 0x9FFF, 0xD7AF, 0xFAFF, 0xFFEF,
-    )
-    private val WEIGHTS = doubleArrayOf(
-        LATIN, LATIN, LATIN, HEBREW, ARABIC, INDIC, THAI_LAO, KHMER_MYANMAR,
-        HANGUL, KANA, KANA, CJK, HANGUL, CJK, LATIN,
+    private val EMOTION_TAG = Regex("\\s*<\\|emotion-[^|>]+?\\|>\\s*")
+    private val NVV_TAG = Regex("\\s*<\\|nv-[^|>]+?\\|>\\s*")
+    private val NVV_PAREN = Regex(
+        "\\((?:burps|chuckle|clear-throat|coughs|emm|exhale|gasps|groans|hissing|" +
+            "humming|inhale|laughs|lip-smacking|pant|sighs|sneezes|sniffs|snorts)\\)"
     )
 
-    /** Python `unicodedata.category` equivalent, reduced to the classes we use. */
-    private fun weightOf(c: Char): Double {
-        val code = c.code
-        if ((code in 65..90) || (code in 97..122)) return LATIN
-        if (code == 32) return SPACE
-        when (Character.getType(c).toByte()) {
-            Character.NON_SPACING_MARK, Character.ENCLOSING_MARK,
-            Character.COMBINING_SPACING_MARK -> return MARK
-            Character.DASH_PUNCTUATION, Character.START_PUNCTUATION,
-            Character.END_PUNCTUATION, Character.CONNECTOR_PUNCTUATION,
-            Character.OTHER_PUNCTUATION, Character.INITIAL_QUOTE_PUNCTUATION,
-            Character.FINAL_QUOTE_PUNCTUATION,
-            Character.MATH_SYMBOL, Character.CURRENCY_SYMBOL,
-            Character.MODIFIER_SYMBOL, Character.OTHER_SYMBOL -> return PUNCT
-            Character.SPACE_SEPARATOR, Character.LINE_SEPARATOR,
-            Character.PARAGRAPH_SEPARATOR -> return SPACE
-            Character.DECIMAL_DIGIT_NUMBER, Character.LETTER_NUMBER,
-            Character.OTHER_NUMBER -> return DIGIT
-            else -> {}
+    private val CJK_LANGS = setOf("zh", "ja", "ko", "yue")
+
+    fun isCjk(lang: String): Boolean = lang.lowercase() in CJK_LANGS
+
+    /** Text the way the demo counts it: tags swapped for a duration placeholder. */
+    fun countText(text: String, lang: String): String {
+        val placeholder = if (isCjk(lang)) "字字" else " word "
+        var t = EMOTION_TAG.replace(text, "")
+        t = NVV_TAG.replace(t, placeholder)
+        t = NVV_PAREN.replace(t, placeholder)
+        return t
+    }
+
+    /** Seconds of speech, clamped to [1, 30] like the official demo. */
+    fun seconds(text: String, lang: String = "zh"): Float {
+        val count = countText(text, lang)
+        val stripped = count.filterNot { it.isWhitespace() }
+        if (stripped.isEmpty()) return MIN_SEC
+        val raw = if (isCjk(lang)) {
+            stripped.length / CJK_CHARS_PER_SEC
+        } else {
+            val words = count.trim().split(Regex("\\s+")).count { it.isNotEmpty() }
+            maxOf(words / EN_WORDS_PER_SEC, stripped.length / EN_CHARS_PER_SEC)
         }
-        var i = 0
-        while (i < RANGES.size && RANGES[i] < code) i++
-        if (i < RANGES.size) return WEIGHTS[i]
-        return if (code > 0x20000) CJK else DEFAULT
+        val sec = raw.coerceIn(MIN_SEC, MAX_SEC)
+        return Math.round(sec * 100f) / 100f
     }
 
-    fun totalWeight(text: String): Double {
-        var sum = 0.0
-        for (c in text) sum += weightOf(c)
-        return sum
-    }
-
-    /** Frames (25 Hz) for [text]; at least one. */
-    fun frames(text: String, refFrames: Double = REF_FRAMES): Int {
-        val refWeight = totalWeight(REF_TEXT)
-        val weight = totalWeight(text)
-        if (refWeight <= 0.0) return 1
-        var est = weight / (refWeight / refFrames)
-        if (est < LOW_THRESHOLD) {
-            est = LOW_THRESHOLD * Math.pow(est / LOW_THRESHOLD, 1.0 / BOOST_STRENGTH)
-        }
-        return Math.max(1, Math.round(est).toInt())
-    }
-
-    /**
-     * `_estimate_target_tokens` with a real reference clause: the reference
-     * sentence supplies both the speaking rate and the audio length.
-     */
-    fun frames(text: String, refText: String, refFrames: Int): Int {
-        val refWeight = totalWeight(refText)
-        if (refWeight <= 0.0 || refFrames <= 0) return frames(text)
-        var est = totalWeight(text) / (refWeight / refFrames.toDouble())
-        if (est < LOW_THRESHOLD) {
-            est = LOW_THRESHOLD * Math.pow(est / LOW_THRESHOLD, 1.0 / BOOST_STRENGTH)
-        }
-        return Math.max(1, Math.round(est).toInt())
-    }
-
-    /** Debug string used by the smoke test. */
-    fun describe(text: String): String =
-        String.format(Locale.US, "weight %.2f -> %d frames", totalWeight(text), frames(text))
+    /** Frames (25 Hz) for [text]; the backend truncates `duration * 25`. */
+    fun frames(text: String, lang: String = "zh"): Int =
+        (seconds(text, lang) * FRAME_RATE).toInt().coerceAtLeast(1)
 }

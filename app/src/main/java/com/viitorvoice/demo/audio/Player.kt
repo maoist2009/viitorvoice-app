@@ -26,4 +26,12 @@ object Player {
     }
 
     fun isPlaying(): Boolean = mp?.isPlaying == true
+
+    fun positionMs(): Int = mp?.runCatching { currentPosition }?.getOrNull() ?: 0
+
+    fun durationMs(): Int = mp?.runCatching { duration }?.getOrNull() ?: 0
+
+    fun seekTo(ms: Int) {
+        mp?.runCatching { seekTo(ms.coerceAtLeast(0)) }
+    }
 }

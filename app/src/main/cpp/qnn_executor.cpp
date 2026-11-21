@@ -8,6 +8,7 @@
  * calls and the buffers must never move once the context is created.
  */
 #include "qnn_executor.h"
+#include "mstore.h"
 
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -534,7 +535,7 @@ int qnn_load(const char *tag, const char *bin_path) {
   const char *gname = NULL;
   struct stat st;
 
-  g->fd = open(bin_path, O_RDONLY);
+  g->fd = mstore_open(bin_path);
   if (g->fd < 0) {
     set_error("open %s", bin_path);
     goto fail;
@@ -619,7 +620,7 @@ int qnn_load_multi(const char *bin_path, char *names, int stride, int max_names)
   memset(grp, 0, sizeof(*grp));
   grp->fd = -1;
 
-  fd = open(bin_path, O_RDONLY);
+  fd = mstore_open(bin_path);
   if (fd < 0) {
     set_error("open %s", bin_path);
     grp = NULL;

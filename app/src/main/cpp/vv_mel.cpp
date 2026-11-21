@@ -1,5 +1,7 @@
 #include "vv_mel.h"
 
+#include "mstore.h"
+
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -84,7 +86,7 @@ void fft512(float *__restrict re, float *__restrict im) {
 }  // namespace
 
 int vv_mel_init(const char *blob_path) {
-  FILE *f = fopen(blob_path, "rb");
+  FILE *f = mstore_fopen(blob_path);
   if (!f) return -1;
   const size_t got_w = fread(g_win, sizeof(float), WIN, f);
   const size_t got_f = fread(g_fb, sizeof(float), (size_t)BINS * MEL, f);

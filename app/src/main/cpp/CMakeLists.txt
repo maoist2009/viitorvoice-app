@@ -32,6 +32,7 @@ add_compile_options(
 add_library(${VV_LIB_NAME} SHARED
     vv_jni.cpp
     qnn_executor.cpp
+    mstore.cpp
     vv_pipeline.cpp
     vv_nar.cpp
     vv_encode.cpp
@@ -39,6 +40,26 @@ add_library(${VV_LIB_NAME} SHARED
 )
 
 find_library(log-lib log)
+
+# libasr_qnn.so — SenseVoice-Small / Silero VAD / Qwen3-ForcedAligner.
+# The sources are shared with ~/projects/asr (same QNN executor, separate copy
+# so the two .so files do not share global state).
+add_library(asr_qnn SHARED
+    asr/asr_jni.c
+    asr/asr_engine.c
+    asr/aligner_jni.c
+    asr/aligner_engine.c
+    asr/asr_mel.c
+    asr/sv_engine.c
+    asr/sv_frontend.c
+    asr/cmp_engine.c
+    asr/cmp_frontend.c
+    asr/vad_engine.c
+    asr/vad_jni.c
+    asr/qnn_executor.cpp
+)
+target_include_directories(asr_qnn PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/asr)
+target_link_libraries(asr_qnn PRIVATE ${log-lib} dl android)
 
 # The log-mel frontend is the only hot pure-CPU code in the pipeline; let the
 # compiler vectorize it (no -ffast-math: the mel values feed a calibrated graph).

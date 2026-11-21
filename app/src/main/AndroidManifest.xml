@@ -3,6 +3,20 @@
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Signature-level permission of the shared model library (MLP/1). Both
+         host flavours are listed because debug installs as <pkg>.tmp; the
+         permission name is derived from the host package, not ours. -->
+    <uses-permission android:name="com.viitorvoice.modelhost.tmp.permission.MODELS" />
+    <uses-permission android:name="com.viitorvoice.modelhost.permission.MODELS" />
+
+    <!-- Package visibility (API 30+): the shared model library lives in another
+         app, so both releases of the host must be declared or neither the
+         provider lookup nor contentResolver.call() can reach them. -->
+    <queries>
+        <package android:name="com.viitorvoice.modelhost.tmp" />
+        <package android:name="com.viitorvoice.modelhost" />
+    </queries>
+
     <application
         android:name=".VvApp"
         android:label="@string/app_name"
@@ -26,6 +40,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- ASR/VAD/aligner run in their own process: the 1.5 GB aligner can
+             trip lmkd, and the editor must survive that. -->
+        <provider
+            android:name=".asr.AsrProvider"
+            android:authorities="${applicationId}.asr"
+            android:exported="false"
+            android:process=":asr" />
 
     </application>
 

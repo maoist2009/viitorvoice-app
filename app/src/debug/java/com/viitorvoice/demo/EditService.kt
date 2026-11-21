@@ -127,8 +127,7 @@ class EditService : Service() {
             Engine.releaseEncoder()
 
             val tok = Engine.tokenizer(this)
-            val est = if (refText == null) Duration.frames(Tags.stripEmotion(text))
-            else Duration.frames(Tags.stripEmotion(text), refText, refFrames)
+            val est = Duration.frames(text, lang)      // official demo rate model
             val want = if (forced > 0) forced else est
             val plan = Prompt.planClone(tok, text, refText, refFrames, lang, want, Engine.maxWindow())
                 ?: throw IllegalStateException("窗口不够: est $est ref $refFrames")

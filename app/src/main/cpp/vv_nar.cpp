@@ -37,6 +37,7 @@
 
 #include <android/log.h>
 
+#include "mstore.h"
 #include "qnn_executor.h"
 #include "vv_pipeline.h"
 
@@ -186,7 +187,7 @@ int vv_nar_cfg_prompt_len(void) { return N_BR > 0 ? BR_TSTART[0] : 0; }
 static uint16_t *map_table(const char *dir, const char *name, size_t rows) {
   char path[512];
   snprintf(path, sizeof(path), "%s/%s", dir, name);
-  int fd = open(path, O_RDONLY);
+  int fd = mstore_open(path);
   if (fd < 0) { set_err("cannot open %s", path); return nullptr; }
   struct stat st;
   if (fstat(fd, &st) != 0) { close(fd); set_err("stat %s", path); return nullptr; }
@@ -236,7 +237,7 @@ int vv_nar_init(const char *models_dir) {
    * proportionally; models/nar_steps overrides it for A/B runs. */
   N_STEPS = N_STEPS_MAX;
   {
-    FILE *f = fopen((dir + "/nar_steps").c_str(), "r");
+    FILE *f = mstore_fopen((dir + "/nar_steps").c_str());
     if (f) {
       int v = 0;
       if (fscanf(f, "%d", &v) == 1 && v >= 1 && v <= N_STEPS_MAX) N_STEPS = v;
